@@ -1,4 +1,4 @@
-const { supabaseAdmin, requireAdmin, send, handleOptions, readBody } = require('./_lib');
+const { supabaseAdmin, requireAdmin, send, handleOptions, readBody } = require('../lib/auth');
 
 module.exports = async (req, res) => {
   if (handleOptions(req, res)) return;

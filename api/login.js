@@ -1,4 +1,4 @@
-const { getEnv, createToken, send, handleOptions, readBody } = require('./_lib');
+const { getEnv, createToken, send, handleOptions, readBody } = require('../lib/auth');
 
 module.exports = async (req, res) => {
   if (handleOptions(req, res)) return;

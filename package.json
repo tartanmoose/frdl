@@ -1,0 +1,9 @@
+{
+  "name": "frdl",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FRDL – Friends Rankings & Demon List",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  }
+}

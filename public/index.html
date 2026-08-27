@@ -458,7 +458,7 @@
       if (token()) headers['Authorization'] = 'Bearer ' + token();
       let res;
       try {
-        res = await fetch(API + path, { ...options, headers });
+        res = await fetch(API + path, { cache: 'no-store', ...options, headers });
       } catch (networkErr) {
         throw new Error('Network error – could not reach /api' + path);
       }
@@ -546,6 +546,27 @@
     function profileOf(f) {
       return f.profile && typeof f.profile === 'object' ? f.profile : {};
     }
+    function displayName(f) {
+      const p = f._p || profileOf(f);
+      return p.username || f.username || '';
+    }
+    function timeAgo(iso) {
+      if (!iso) return '';
+      const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+      if (s < 45) return 'just now';
+      if (s < 3600) return Math.floor(s / 60) + 'm ago';
+      if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+      return Math.floor(s / 86400) + 'd ago';
+    }
+    function latestUpdatedLabel() {
+      if (!friends.length) return '';
+      let latest = 0;
+      for (const f of friends) {
+        const t = new Date(f.updated_at).getTime();
+        if (Number.isFinite(t) && t > latest) latest = t;
+      }
+      return latest ? 'updated ' + timeAgo(new Date(latest).toISOString()) : '';
+    }
 
     // ===== Friends data =====
     async function loadFriends() {
@@ -581,15 +602,32 @@
       }
     }
 
-    async function fetchProfile(username) {
-      const res = await fetch(GDB_PROFILE + encodeURIComponent(username.trim()));
-      if (!res.ok) {
-        if (res.status === 404 || res.status === 400) throw new Error('User not found');
-        throw new Error('Request failed (' + res.status + ')');
+    async function fetchProfile(username, accountID, playerID) {
+      const attempts = [];
+      if (accountID) attempts.push(GDB_PROFILE + encodeURIComponent(accountID) + '?t=' + Date.now());
+      if (username) attempts.push(GDB_PROFILE + encodeURIComponent(username.trim()) + '?t=' + Date.now());
+      if (playerID) attempts.push(GDB_PROFILE + encodeURIComponent(playerID) + '?player=1&t=' + Date.now());
+      if (!attempts.length) throw new Error('Username required');
+
+      let lastErr = null;
+      for (const url of attempts) {
+        try {
+          const res = await fetch(url, { cache: 'no-store' });
+          if (!res.ok) {
+            lastErr = new Error(res.status === 404 || res.status === 400 ? 'User not found' : 'Request failed (' + res.status + ')');
+            continue;
+          }
+          const data = await res.json();
+          if (!data || !data.username) {
+            lastErr = new Error('User not found');
+            continue;
+          }
+          return data;
+        } catch (err) {
+          lastErr = err;
+        }
       }
-      const data = await res.json();
-      if (!data || !data.username) throw new Error('Invalid response');
-      return data;
+      throw lastErr || new Error('User not found');
     }
 
     async function addUser(username) {
@@ -628,29 +666,33 @@
       }
     }
 
+    async function liveRefresh({ force = false, quiet = false } = {}) {
+      if (!friends.length) return;
+      if (!quiet) setStatus('Updating live stats…', null, true);
+      try {
+        const data = await api('/refresh' + (force ? '?force=1' : ''), { method: 'POST' });
+        friends = data.friends || friends;
+        renderFriends();
+        const ago = latestUpdatedLabel();
+        if (data.errors) {
+          setStatus(`Updated ${data.updated || 0}, ${data.errors} failed` + (ago ? ' · ' + ago : ''), 'error');
+        } else {
+          setStatus((force ? 'All stats refreshed' : 'Live stats') + (ago ? ' · ' + ago : ''), 'success');
+        }
+      } catch (err) {
+        if (!quiet) setStatus(err.message || 'Live update failed', 'error');
+      }
+    }
+
     async function refreshAll() {
       if (!friends.length) {
         setStatus('Nothing to refresh', 'error');
         return;
       }
-      setStatus('Refreshing all…', null, true);
-      document.getElementById('refreshBtn').disabled = true;
-      let errors = 0;
-      for (const f of friends) {
-        try {
-          const profile = await fetchProfile(f.username);
-          await api('/friends', {
-            method: 'PUT',
-            body: JSON.stringify({ id: f.id, profile })
-          });
-        } catch {
-          errors++;
-        }
-        await new Promise(r => setTimeout(r, 300));
-      }
-      await loadFriends();
-      setStatus(errors ? `Refreshed with ${errors} error(s)` : 'All stats refreshed', errors ? 'error' : 'success');
-      document.getElementById('refreshBtn').disabled = false;
+      const btn = document.getElementById('refreshBtn');
+      if (btn) btn.disabled = true;
+      await liveRefresh({ force: true });
+      if (btn) btn.disabled = false;
     }
 
     function sortedFriends() {
@@ -662,7 +704,7 @@
           _demons: p.demons ?? 0,
           _moons: p.moons ?? 0,
           _rank: p.rank || 99999999,
-          _name: (f.username || p.username || '').toLowerCase(),
+          _name: (p.username || f.username || '').toLowerCase(),
           _p: p
         };
       });
@@ -692,7 +734,7 @@
             <div class="card-header">
               <span class="card-pos ${posClass(i)}">${i + 1}</span>
               <div style="flex:1;min-width:0">
-                <div class="card-name">${escapeHtml(f.username || p.username)}</div>
+                <div class="card-name">${escapeHtml(displayName(f))}</div>
                 <div class="card-rank">Global #${formatNum(p.rank)}</div>
               </div>
               ${isAdmin ? `<button class="btn-danger" onclick="removeUser('${escapeAttr(f.id)}')">Remove</button>` : ''}
@@ -708,7 +750,7 @@
               <div class="stat"><span class="stat-label">Account ID</span><span class="stat-value" style="font-size:0.95rem">${p.accountID ?? '—'}</span></div>
             </div>
             <div class="card-footer">
-              <span>Player ID ${p.playerID ?? '—'}</span>
+              <span>Player ID ${p.playerID ?? '—'} · ${escapeHtml(timeAgo(f.updated_at) || 'not yet updated')}</span>
               ${p.youtube ? `<a href="${escapeAttr(p.youtubeURL || 'https://youtube.com/@' + p.youtube)}" target="_blank" rel="noopener" style="color:var(--accent2)">YouTube</a>` : ''}
             </div>
           </div>`;
@@ -733,7 +775,7 @@
               const p = f._p;
               return `<tr>
                 <td class="pos-num ${posClass(i)}">${i + 1}</td>
-                <td><strong>${escapeHtml(f.username || p.username)}</strong></td>
+                <td><strong>${escapeHtml(displayName(f))}</strong></td>
                 <td class="num stars">${formatNum(p.stars)}</td>
                 <td class="num demons">${formatNum(p.demons)}</td>
                 <td class="num moons">${formatNum(p.moons)}</td>
@@ -993,6 +1035,14 @@
       if (friends.length === 0 && !isAdmin) {
         content.innerHTML = '<div class="empty">No friends listed yet. Ask the admin to add some!</div>';
       }
+
+      await liveRefresh();
+      setInterval(() => {
+        if (document.visibilityState === 'visible') liveRefresh({ quiet: true });
+      }, 120000);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') liveRefresh({ quiet: true });
+      });
     })();
   </script>
 </body>

@@ -1,4 +1,5 @@
 const { supabaseAdmin, requireAdmin, send, handleOptions, readBody } = require('../lib/auth');
+const { fetchGdProfile } = require('../lib/gd');
 
 module.exports = async (req, res) => {
   if (handleOptions(req, res)) return;
@@ -23,20 +24,44 @@ module.exports = async (req, res) => {
     if (req.method === 'POST') {
       const body = await readBody(req);
       const username = (body.username || '').trim();
-      const profile = body.profile || {};
-
       if (!username) return send(res, 400, { error: 'Username required' });
+
+      // Always pull a live GDBrowser profile so we store accountID for later refreshes
+      const profile = await fetchGdProfile({
+        username,
+        accountID: body.profile && body.profile.accountID,
+        playerID: body.profile && body.profile.playerID
+      });
+
+      const now = new Date().toISOString();
+      const row = {
+        username: profile.username || username,
+        profile,
+        updated_at: now
+      };
+
+      // If this GD account is already on the list (e.g. after a rename), update that row
+      if (profile.accountID) {
+        const { data: byAcc } = await db
+          .from('friends')
+          .select('id')
+          .eq('profile->>accountID', String(profile.accountID))
+          .maybeSingle();
+        if (byAcc) {
+          const { data, error } = await db
+            .from('friends')
+            .update(row)
+            .eq('id', byAcc.id)
+            .select()
+            .single();
+          if (error) throw error;
+          return send(res, 200, { friend: data });
+        }
+      }
 
       const { data, error } = await db
         .from('friends')
-        .upsert(
-          {
-            username,
-            profile,
-            updated_at: new Date().toISOString()
-          },
-          { onConflict: 'username' }
-        )
+        .upsert(row, { onConflict: 'username' })
         .select()
         .single();
 
